@@ -184,7 +184,10 @@ export class WebhookHandler {
     // Start media streaming - Telnyx will connect a WebSocket to our media endpoint
     const baseUrl = this.config.webhookBaseUrl;
     if (!baseUrl || !/^https?:\/\/.+/.test(baseUrl)) {
-      logger.error({ msg: "webhookBaseUrl is not configured or is not a fully-qualified URL; cannot start media stream", callControlId });
+      logger.error({
+        msg: "webhookBaseUrl is not configured or is not a fully-qualified URL; cannot start media stream",
+        callControlId,
+      });
       return { status: 200 };
     }
     const streamUrl = `${baseUrl.replace("https://", "wss://").replace("http://", "ws://")}/plugins/voice-call/media-stream`;

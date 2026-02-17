@@ -9,6 +9,7 @@ interface ActiveCall {
   record: CallRecord;
   fsm: CallStateMachine;
   bridge: AudioBridge;
+  ending?: boolean;
 }
 
 export class CallManager {
@@ -180,7 +181,12 @@ export class CallManager {
     const call = this.activeCalls.get(callControlId);
     if (!call) return;
     if (!call.fsm.canTransition(newState)) {
-      logger.warn({ msg: "Invalid call state transition, skipping", from: call.fsm.state, to: newState, callControlId });
+      logger.warn({
+        msg: "Invalid call state transition, skipping",
+        from: call.fsm.state,
+        to: newState,
+        callControlId,
+      });
       return;
     }
     call.fsm.transition(newState);
@@ -204,8 +210,12 @@ export class CallManager {
     const call = this.activeCalls.get(callControlId);
     if (!call) return;
 
-    // Idempotence guard: remove from map immediately so concurrent calls (e.g.,
-    // hangup webhook + bridge WS close) don't both process the same call.
+    // Idempotence guard: two concurrent callers (e.g., hangup webhook + bridge WS
+    // close) can both pass the `has()` check above before either deletes. The
+    // `ending` flag is checked and set synchronously (before any await) so only
+    // one caller proceeds.
+    if (call.ending) return;
+    call.ending = true;
     this.activeCalls.delete(callControlId);
 
     // Transition to ended if not already terminal
