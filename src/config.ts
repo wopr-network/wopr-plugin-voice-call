@@ -36,6 +36,14 @@ export const voiceCallConfigSchema: ConfigSchema = {
       description: "Public URL where Telnyx sends webhook events",
     },
     {
+      name: "webhookSigningSecret",
+      type: "password",
+      label: "Webhook Signing Secret",
+      placeholder: "From Telnyx portal → Webhooks → Signing Secret",
+      description: "HMAC-SHA256 signing secret for verifying webhook authenticity",
+      secret: true,
+    },
+    {
       name: "greeting",
       type: "textarea",
       label: "Greeting Message",

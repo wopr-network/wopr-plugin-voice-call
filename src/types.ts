@@ -160,6 +160,12 @@ export interface VoiceCallPluginConfig {
   defaultCallerId?: string;
   /** Webhook base URL for inbound calls */
   webhookBaseUrl?: string;
+  /**
+   * Telnyx webhook signing secret (from the Telnyx portal → Webhooks → Signing Secret).
+   * Used to verify HMAC-SHA256 signatures on incoming webhook requests.
+   * When set, requests without a valid signature are rejected with 401.
+   */
+  webhookSigningSecret?: string;
   /** Default greeting message for inbound calls */
   greeting?: string;
   /** Default voice for TTS (provider-specific voice ID) */

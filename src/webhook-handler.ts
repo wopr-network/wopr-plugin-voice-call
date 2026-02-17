@@ -1,3 +1,4 @@
+import { createHmac, timingSafeEqual } from "node:crypto";
 import type WebSocket from "ws";
 import { WebSocketServer } from "ws";
 import type { CallManager } from "./call-manager.js";
@@ -22,6 +23,67 @@ export class WebhookHandler {
     this.callManager = opts.callManager;
     this.ctx = opts.ctx;
     this.config = opts.config;
+  }
+
+  /**
+   * Verify a Telnyx webhook signature.
+   *
+   * Telnyx signs webhook requests with HMAC-SHA256 using the signing secret from
+   * the portal. The signature is placed in the `telnyx-signature-ed25519` header
+   * alongside a `telnyx-timestamp` header. We compute HMAC-SHA256 over the
+   * concatenation `<timestamp>.<rawBody>` and compare with the provided signature.
+   *
+   * @returns true if the signature is valid (or if no signing secret is configured)
+   */
+  verifyWebhookSignature(rawBody: string, signature: string | undefined, timestamp: string | undefined): boolean {
+    const secret = this.config.webhookSigningSecret;
+    if (!secret) {
+      // No secret configured — pass through (warn once at init, not every request)
+      return true;
+    }
+    if (!signature || !timestamp) {
+      logger.warn({ msg: "Webhook request missing signature or timestamp headers" });
+      return false;
+    }
+    const payload = `${timestamp}.${rawBody}`;
+    const expected = createHmac("sha256", secret).update(payload, "utf8").digest("hex");
+    try {
+      return timingSafeEqual(Buffer.from(expected, "hex"), Buffer.from(signature, "hex"));
+    } catch {
+      // Signature was not valid hex or wrong length
+      return false;
+    }
+  }
+
+  /**
+   * Handle a raw Telnyx webhook POST request, verifying the signature before
+   * dispatching to the event handler.
+   *
+   * @param rawBody - The raw JSON request body as a string (before parsing)
+   * @param headers - Request headers; expected keys: telnyx-signature-ed25519, telnyx-timestamp
+   * @returns HTTP status and optional body
+   */
+  async handleWebhookRequest(
+    rawBody: string,
+    headers: Record<string, string | string[] | undefined>,
+  ): Promise<{ status: number; body?: unknown }> {
+    const signature = headers["telnyx-signature-ed25519"];
+    const timestamp = headers["telnyx-timestamp"];
+    const sig = Array.isArray(signature) ? signature[0] : signature;
+    const ts = Array.isArray(timestamp) ? timestamp[0] : timestamp;
+
+    if (!this.verifyWebhookSignature(rawBody, sig, ts)) {
+      logger.warn({ msg: "Webhook signature verification failed — rejecting request" });
+      return { status: 401, body: { error: "Invalid webhook signature" } };
+    }
+
+    let event: TelnyxWebhookEvent;
+    try {
+      event = JSON.parse(rawBody) as TelnyxWebhookEvent;
+    } catch {
+      return { status: 400, body: { error: "Invalid JSON body" } };
+    }
+    return this.handleWebhook(event);
   }
 
   /** Handle a Telnyx webhook POST body */
@@ -87,10 +149,17 @@ export class WebhookHandler {
     return { status: 200 };
   }
 
-  /** Resolve tenantId from the destination phone number */
-  private async resolveTenantId(_to: string): Promise<string> {
-    // TODO: look up phone_numbers table to find which tenant owns this number
-    // For now, use "default"
+  /** Resolve tenantId from the destination phone number via the phone_numbers table */
+  private async resolveTenantId(to: string): Promise<string> {
+    try {
+      const repo = this.ctx.storage.getRepository<Record<string, unknown>>("voice_call", "phone_numbers");
+      const record = await repo.findFirst({ phoneNumber: to, active: true });
+      if (record?.tenantId && typeof record.tenantId === "string") {
+        return record.tenantId;
+      }
+    } catch (err) {
+      logger.warn({ msg: "Failed to resolve tenantId from phone_numbers table", to, error: String(err) });
+    }
     return "default";
   }
 
@@ -141,7 +210,8 @@ export class WebhookHandler {
 
   /** Handle call.hangup */
   private async handleCallHangup(callControlId: string): Promise<{ status: number }> {
-    await this.callManager.endCall(callControlId, "hangup");
+    // Pass skipTelnyxHangup=true: Telnyx already hung up, no need to send another hangup
+    await this.callManager.endCall(callControlId, "hangup", true);
     return { status: 200 };
   }
 

@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { AudioBridge } from "./audio-bridge.js";
 import { CallStateMachine } from "./call-state-machine.js";
 import { logger } from "./logger.js";
+import type { TelnyxClient } from "./telnyx-client.js";
 import type { CallRecord, CallState, VoiceCallPluginConfig, WOPRPluginContext } from "./types.js";
 
 interface ActiveCall {
@@ -15,11 +16,13 @@ export class CallManager {
   private maxConcurrent: number;
   private ctx: WOPRPluginContext;
   private config: VoiceCallPluginConfig;
+  private telnyxClient: TelnyxClient | null;
 
-  constructor(ctx: WOPRPluginContext, config: VoiceCallPluginConfig) {
+  constructor(ctx: WOPRPluginContext, config: VoiceCallPluginConfig, telnyxClient?: TelnyxClient) {
     this.ctx = ctx;
     this.config = config;
     this.maxConcurrent = config.maxConcurrentCalls || 10;
+    this.telnyxClient = telnyxClient || null;
   }
 
   get activeCallCount(): number {
@@ -70,8 +73,9 @@ export class CallManager {
         });
         return response;
       },
+      // When the media WS closes, Telnyx has already hung up — skip redundant hangup
       onCallEnd: () => {
-        void this.endCall(callControlId, "hangup");
+        void this.endCall(callControlId, "hangup", true);
       },
       getSTT: () => this.ctx.getSTT(),
       getTTS: () => this.ctx.getTTS(),
@@ -130,8 +134,9 @@ export class CallManager {
         });
         return response;
       },
+      // When the media WS closes, Telnyx has already hung up — skip redundant hangup
       onCallEnd: () => {
-        void this.endCall(telnyxResult.callControlId, "hangup");
+        void this.endCall(telnyxResult.callControlId, "hangup", true);
       },
       getSTT: () => this.ctx.getSTT(),
       getTTS: () => this.ctx.getTTS(),
@@ -170,8 +175,16 @@ export class CallManager {
     }
   }
 
-  /** End a call and clean up */
-  async endCall(callControlId: string, reason: string): Promise<void> {
+  /** End a call and clean up.
+   *
+   * @param callControlId - Telnyx call control ID
+   * @param reason - Why the call ended ("hangup", "timeout", "error", etc.)
+   * @param skipTelnyxHangup - Set true when the termination was triggered by a Telnyx
+   *   webhook (call.hangup) to avoid sending a redundant hangup back to Telnyx.
+   *   When false (the default), a hangup is sent to Telnyx before removing the call
+   *   from the active map so the call is never lost while still active on Telnyx.
+   */
+  async endCall(callControlId: string, reason: string, skipTelnyxHangup = false): Promise<void> {
     const call = this.activeCalls.get(callControlId);
     if (!call) return;
 
@@ -189,6 +202,15 @@ export class CallManager {
     call.record.endedAt = Date.now();
     call.record.endReason = reason;
     call.record.durationMs = call.record.connectedAt ? call.record.endedAt - call.record.connectedAt : 0;
+
+    // If the call is being ended programmatically (not by a Telnyx hangup webhook),
+    // tell Telnyx to hang up first. The call must remain in activeCalls until this
+    // succeeds so it is never "lost" (tracked here but still active on Telnyx).
+    if (!skipTelnyxHangup && this.telnyxClient) {
+      await this.telnyxClient.hangup(callControlId).catch((err) => {
+        logger.warn({ msg: "Telnyx hangup failed during endCall", callControlId, error: String(err) });
+      });
+    }
 
     // Clean up audio bridge
     await call.bridge.cleanup();
@@ -214,7 +236,8 @@ export class CallManager {
       reason,
     });
 
-    // Remove from active map
+    // Remove from active map only after all async work (including Telnyx hangup) is done.
+    // This prevents the call from being "lost" (deleted here but still active on Telnyx).
     this.activeCalls.delete(callControlId);
     logger.info({ msg: "Call ended", callId: call.record.id, reason, durationMs: call.record.durationMs });
   }

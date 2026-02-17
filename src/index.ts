@@ -5,7 +5,7 @@ import { logger } from "./logger.js";
 import { PhoneNumberManager } from "./phone-numbers.js";
 import { voiceCallStorageSchema } from "./schema.js";
 import { TelnyxClient } from "./telnyx-client.js";
-import type { TelnyxWebhookEvent, VoiceCallPluginConfig, WOPRPlugin, WOPRPluginContext } from "./types.js";
+import type { VoiceCallPluginConfig, WOPRPlugin, WOPRPluginContext } from "./types.js";
 import { WebhookHandler } from "./webhook-handler.js";
 
 let ctx: WOPRPluginContext | null = null;
@@ -70,7 +70,7 @@ const plugin: WOPRPlugin = {
     }
 
     // 6. Create managers
-    callManager = new CallManager(ctx, config || {});
+    callManager = new CallManager(ctx, config || {}, telnyxClient);
     phoneNumberManager = new PhoneNumberManager(telnyxClient, ctx);
     webhookHandler = new WebhookHandler({
       telnyxClient,
@@ -98,7 +98,8 @@ const plugin: WOPRPlugin = {
       provisionNumber: (number: string, tenantId: string) => phoneNumberManager?.provision(number, tenantId),
       releaseNumber: (number: string, tenantId: string) => phoneNumberManager?.release(number, tenantId),
       searchNumbers: (opts: { country?: string; areaCode?: string }) => phoneNumberManager?.searchAvailable(opts),
-      handleWebhook: (body: unknown) => webhookHandler?.handleWebhook(body as TelnyxWebhookEvent),
+      handleWebhookRequest: (rawBody: string, headers: Record<string, string | string[] | undefined>) =>
+        webhookHandler?.handleWebhookRequest(rawBody, headers),
     });
     logger.info("Registered voice-call extension");
 
