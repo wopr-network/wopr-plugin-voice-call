@@ -1,0 +1,67 @@
+import type { ConfigSchema } from "@wopr-network/plugin-types";
+
+export const voiceCallConfigSchema: ConfigSchema = {
+  title: "Voice Call (PSTN)",
+  description: "Configure PSTN voice calls via Telnyx",
+  fields: [
+    {
+      name: "apiKey",
+      type: "password",
+      label: "Telnyx API Key",
+      placeholder: "KEY...",
+      required: true,
+      description: "Your Telnyx V2 API key",
+      secret: true,
+    },
+    {
+      name: "connectionId",
+      type: "text",
+      label: "Telnyx Connection ID",
+      placeholder: "Connection ID from Telnyx portal",
+      required: true,
+      description: "The Call Control Application or SIP Connection ID",
+    },
+    {
+      name: "defaultCallerId",
+      type: "text",
+      label: "Default Caller ID",
+      placeholder: "+15551234567",
+      description: "Default outbound phone number in E.164 format",
+    },
+    {
+      name: "webhookBaseUrl",
+      type: "text",
+      label: "Webhook Base URL",
+      placeholder: "https://yourserver.com",
+      description: "Public URL where Telnyx sends webhook events",
+    },
+    {
+      name: "greeting",
+      type: "textarea",
+      label: "Greeting Message",
+      default: "Hello, how can I help you today?",
+      description: "Text spoken when a call is answered",
+    },
+    {
+      name: "defaultVoice",
+      type: "text",
+      label: "Default TTS Voice",
+      placeholder: "Voice ID from your TTS provider",
+      description: "Voice ID used for TTS synthesis",
+    },
+    {
+      name: "recordByDefault",
+      type: "checkbox",
+      label: "Record Calls",
+      default: false,
+      description: "Enable call recording by default (opt-in)",
+    },
+    {
+      name: "maxConcurrentCalls",
+      type: "number",
+      label: "Max Concurrent Calls",
+      default: 10,
+      description: "Maximum number of simultaneous calls per instance",
+    },
+  ],
+};
