@@ -84,17 +84,25 @@ export class CallManager {
     const activeCall = { record, fsm, bridge };
     this.activeCalls.set(callControlId, activeCall);
 
-    // Persist call record to storage
-    const repo = this.ctx.storage.getRepository<Record<string, unknown>>("voice_call", "calls");
-    await repo.insert(record as unknown as Record<string, unknown>);
+    try {
+      // Persist call record to storage
+      const repo = this.ctx.storage.getRepository<Record<string, unknown>>("voice_call", "calls");
+      await repo.insert(record as unknown as Record<string, unknown>);
 
-    // Emit event
-    await this.ctx.events.emitCustom("voice-call:started", {
-      callId,
-      direction: "inbound",
-      from,
-      to,
-    });
+      // Emit event
+      await this.ctx.events.emitCustom("voice-call:started", {
+        callId,
+        direction: "inbound",
+        from,
+        to,
+      });
+    } catch (err) {
+      // Clean up the orphaned ActiveCall+bridge on failure
+      this.activeCalls.delete(callControlId);
+      await bridge.cleanup().catch(() => {});
+      logger.error({ msg: "Failed to register inbound call, cleaning up", callId, error: String(err) });
+      return null;
+    }
 
     logger.info({ msg: "Inbound call registered", callId, from, to });
     return activeCall;
@@ -107,6 +115,10 @@ export class CallManager {
     tenantId: string,
     telnyxResult: { callControlId: string; callLegId: string; callSessionId: string },
   ): Promise<ActiveCall> {
+    if (!this.canAcceptCall()) {
+      throw new Error(`Max concurrent calls (${this.maxConcurrent}) reached, cannot initiate outbound call`);
+    }
+
     const callId = randomUUID();
     const sessionId = `voice-call-${callId}`;
 
@@ -167,6 +179,10 @@ export class CallManager {
   transitionCall(callControlId: string, newState: Exclude<CallState, "ringing">): void {
     const call = this.activeCalls.get(callControlId);
     if (!call) return;
+    if (!call.fsm.canTransition(newState)) {
+      logger.warn({ msg: "Invalid call state transition, skipping", from: call.fsm.state, to: newState, callControlId });
+      return;
+    }
     call.fsm.transition(newState);
     call.record.state = call.fsm.state;
 
@@ -187,6 +203,10 @@ export class CallManager {
   async endCall(callControlId: string, reason: string, skipTelnyxHangup = false): Promise<void> {
     const call = this.activeCalls.get(callControlId);
     if (!call) return;
+
+    // Idempotence guard: remove from map immediately so concurrent calls (e.g.,
+    // hangup webhook + bridge WS close) don't both process the same call.
+    this.activeCalls.delete(callControlId);
 
     // Transition to ended if not already terminal
     if (!call.fsm.isTerminal) {
@@ -236,9 +256,6 @@ export class CallManager {
       reason,
     });
 
-    // Remove from active map only after all async work (including Telnyx hangup) is done.
-    // This prevents the call from being "lost" (deleted here but still active on Telnyx).
-    this.activeCalls.delete(callControlId);
     logger.info({ msg: "Call ended", callId: call.record.id, reason, durationMs: call.record.durationMs });
   }
 

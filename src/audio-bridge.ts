@@ -96,6 +96,7 @@ export class AudioBridge {
   private playing = false; // True while TTS audio is being sent
   private interrupted = false; // True if barge-in detected while playing
   private closed = false;
+  private callEndFired = false; // Idempotence guard for onCallEnd()
   private readonly config: AudioBridgeConfig;
 
   private onTranscript: (text: string) => Promise<string>; // Returns LLM response
@@ -151,7 +152,10 @@ export class AudioBridge {
 
       case "stop":
         await this.cleanup();
-        this.onCallEnd();
+        if (!this.callEndFired) {
+          this.callEndFired = true;
+          this.onCallEnd();
+        }
         break;
 
       default:
@@ -192,7 +196,12 @@ export class AudioBridge {
       // Synthesize TTS audio
       await this.playTTSResponse(response);
 
-      // Restart STT session for next utterance
+      // Restart STT session for next utterance — close the existing one first to avoid leaks
+      if (this.sttSession) {
+        this.sttSession.endAudio();
+        await this.sttSession.close();
+        this.sttSession = null;
+      }
       await this.startSTTSession();
     } catch (err) {
       logger.error({ msg: "Transcript handling failed", error: String(err) });
@@ -260,8 +269,12 @@ export class AudioBridge {
       }
     });
     ws.on("close", () => {
-      void this.cleanup();
-      this.onCallEnd();
+      void this.cleanup().then(() => {
+        if (!this.callEndFired) {
+          this.callEndFired = true;
+          this.onCallEnd();
+        }
+      });
     });
     ws.on("error", (err) => {
       logger.error({ msg: "Telnyx WS error", error: String(err) });

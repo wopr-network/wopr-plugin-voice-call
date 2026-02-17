@@ -37,7 +37,20 @@ export class PhoneNumberManager {
       active: true,
       provisionedAt: Date.now(),
     };
-    await this.repo.insert(record as unknown as Record<string, unknown>);
+    try {
+      await this.repo.insert(record as unknown as Record<string, unknown>);
+    } catch (err) {
+      // The number was ordered from Telnyx but we failed to persist it locally.
+      // Log the ordered number details so it can be recovered manually.
+      logger.error({
+        msg: "Phone number ordered from Telnyx but DB insert failed — manual recovery needed",
+        phoneNumber,
+        telnyxPhoneNumberId: result.id,
+        tenantId,
+        error: String(err),
+      });
+      throw err;
+    }
     logger.info({ msg: "Phone number provisioned", phoneNumber, tenantId });
     return record;
   }
