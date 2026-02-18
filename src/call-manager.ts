@@ -78,8 +78,8 @@ export class CallManager {
       onCallEnd: () => {
         void this.endCall(callControlId, "hangup", true);
       },
-      getSTT: () => this.ctx.getSTT(),
-      getTTS: () => this.ctx.getTTS(),
+      getSTT: () => this.ctx.getExtension("stt"),
+      getTTS: () => this.ctx.getExtension("tts"),
     });
 
     const activeCall = { record, fsm, bridge };
@@ -151,8 +151,8 @@ export class CallManager {
       onCallEnd: () => {
         void this.endCall(telnyxResult.callControlId, "hangup", true);
       },
-      getSTT: () => this.ctx.getSTT(),
-      getTTS: () => this.ctx.getTTS(),
+      getSTT: () => this.ctx.getExtension("stt"),
+      getTTS: () => this.ctx.getExtension("tts"),
     });
 
     const activeCall = { record, fsm, bridge };

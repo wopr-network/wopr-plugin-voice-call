@@ -101,8 +101,8 @@ export class AudioBridge {
 
   private onTranscript: (text: string) => Promise<string>; // Returns LLM response
   private onCallEnd: () => void;
-  private getSTT: () => unknown; // ctx.getSTT()
-  private getTTS: () => unknown; // ctx.getTTS()
+  private getSTT: () => unknown; // ctx.getExtension('stt')
+  private getTTS: () => unknown; // ctx.getExtension('tts')
 
   constructor(opts: {
     config?: Partial<AudioBridgeConfig>;
