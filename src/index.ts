@@ -15,7 +15,7 @@ import type {
   WOPRPlugin,
   WOPRPluginContext,
 } from "./types.js";
-import { endAllVoiceSessions, getAllVoiceSessions } from "./voice-session.js";
+import { endAllVoiceSessions, endVoiceSession, getAllVoiceSessions } from "./voice-session.js";
 
 let ctx: WOPRPluginContext | null = null;
 const cleanups: Array<() => void> = [];
@@ -112,7 +112,7 @@ const voiceCallChannelProvider: ChannelProvider = {
   async send(channelId: string, content: string): Promise<void> {
     if (!ctx) throw new Error("Voice call plugin not initialized");
     logger.info(`Voice send (TTS): channelId=${channelId} contentLength=${content.length}`);
-    // TTS invocation delegated to the capability provider
+    throw new Error("send() not supported: voice-call uses TTS only");
   },
 
   getBotUsername(): string {
@@ -242,8 +242,8 @@ const plugin: WOPRPlugin = {
 
     // Subscribe to events
     if (ctx.events?.on) {
-      const unsubSessionEnd = ctx.events.on("session:destroy", () => {
-        endAllVoiceSessions();
+      const unsubSessionEnd = ctx.events.on("session:destroy", (payload) => {
+        endVoiceSession(payload.session);
       });
       if (typeof unsubSessionEnd === "function") {
         cleanups.push(unsubSessionEnd);
