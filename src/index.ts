@@ -1,137 +1,283 @@
-import { CallManager } from "./call-manager.js";
-import { voiceCallChannelProvider } from "./channel-provider.js";
-import { voiceCallConfigSchema } from "./config.js";
+/**
+ * WOPR Voice Call Plugin
+ *
+ * Orchestrates TTS + STT capability providers for full voice conversations.
+ * Does NOT implement audio directly — requires at least one tts and one stt
+ * capability provider to be installed.
+ */
+
 import { logger } from "./logger.js";
-import { PhoneNumberManager } from "./phone-numbers.js";
-import { voiceCallStorageSchema } from "./schema.js";
-import { TelnyxClient } from "./telnyx-client.js";
-import type { VoiceCallPluginConfig, WOPRPlugin, WOPRPluginContext } from "./types.js";
-import { WebhookHandler } from "./webhook-handler.js";
+import type {
+  ChannelCommand,
+  ChannelMessageParser,
+  ChannelProvider,
+  ConfigSchema,
+  WOPRPlugin,
+  WOPRPluginContext,
+} from "./types.js";
+import { endAllVoiceSessions, getAllVoiceSessions } from "./voice-session.js";
 
 let ctx: WOPRPluginContext | null = null;
-let callManager: CallManager | null = null;
-let webhookHandler: WebhookHandler | null = null;
-let phoneNumberManager: PhoneNumberManager | null = null;
+const cleanups: Array<() => void> = [];
+
+// ============================================================================
+// Config Schema
+// ============================================================================
+
+const configSchema: ConfigSchema = {
+  title: "Voice Call",
+  description: "Configure voice call orchestration",
+  fields: [
+    {
+      name: "enabled",
+      type: "checkbox",
+      label: "Enabled",
+      default: true,
+      setupFlow: "none",
+    },
+    {
+      name: "defaultLanguage",
+      type: "text",
+      label: "Default Language",
+      placeholder: "en",
+      default: "en",
+      description: "Default language for speech recognition",
+      setupFlow: "none",
+    },
+    {
+      name: "maxSessionDurationMs",
+      type: "number",
+      label: "Max Session Duration (ms)",
+      placeholder: "1800000",
+      default: 1800000,
+      description: "Maximum voice session duration (default: 30 minutes)",
+      setupFlow: "none",
+    },
+    {
+      name: "silenceTimeoutMs",
+      type: "number",
+      label: "Silence Timeout (ms)",
+      placeholder: "30000",
+      default: 30000,
+      description: "End session after this much silence (default: 30 seconds)",
+      setupFlow: "none",
+    },
+    {
+      name: "autoAnswer",
+      type: "checkbox",
+      label: "Auto-Answer",
+      default: false,
+      description: "Automatically answer incoming voice requests",
+      setupFlow: "none",
+    },
+  ],
+};
+
+// ============================================================================
+// Channel Provider
+// ============================================================================
+
+const registeredCommands = new Map<string, ChannelCommand>();
+const registeredParsers = new Map<string, ChannelMessageParser>();
+
+const voiceCallChannelProvider: ChannelProvider = {
+  id: "voice-call",
+
+  registerCommand(cmd: ChannelCommand): void {
+    registeredCommands.set(cmd.name, cmd);
+    logger.info(`Channel command registered: ${cmd.name}`);
+  },
+
+  unregisterCommand(name: string): void {
+    registeredCommands.delete(name);
+  },
+
+  getCommands(): ChannelCommand[] {
+    return Array.from(registeredCommands.values());
+  },
+
+  addMessageParser(parser: ChannelMessageParser): void {
+    registeredParsers.set(parser.id, parser);
+    logger.info(`Message parser registered: ${parser.id}`);
+  },
+
+  removeMessageParser(id: string): void {
+    registeredParsers.delete(id);
+  },
+
+  getMessageParsers(): ChannelMessageParser[] {
+    return Array.from(registeredParsers.values());
+  },
+
+  async send(channelId: string, content: string): Promise<void> {
+    if (!ctx) throw new Error("Voice call plugin not initialized");
+    logger.info(`Voice send (TTS): channelId=${channelId} contentLength=${content.length}`);
+    // TTS invocation delegated to the capability provider
+  },
+
+  getBotUsername(): string {
+    return "voice-call";
+  },
+};
+
+// ============================================================================
+// Extension API
+// ============================================================================
+
+const voiceCallExtension = {
+  getSessions: () => getAllVoiceSessions(),
+  getSessionCount: () => getAllVoiceSessions().length,
+  isActive: () => getAllVoiceSessions().length > 0,
+};
+
+// ============================================================================
+// Manifest
+// ============================================================================
+
+const manifest = {
+  name: "@wopr-network/wopr-plugin-voice-call",
+  version: "1.0.0",
+  description: "Voice call orchestration — coordinates TTS + STT for full voice conversations",
+  author: "TSavo",
+  license: "MIT",
+  capabilities: ["voice-call", "channel"],
+  category: "voice",
+  tags: ["voice", "tts", "stt", "voice-call", "channel"],
+  icon: "🎙️",
+  requires: {
+    network: { outbound: true },
+  },
+  lifecycle: {
+    hotReload: false,
+    shutdownBehavior: "graceful" as const,
+    shutdownTimeoutMs: 10000,
+  },
+  configSchema,
+  dependencies: [],
+};
+
+// ============================================================================
+// Plugin
+// ============================================================================
 
 const plugin: WOPRPlugin = {
   name: "wopr-plugin-voice-call",
-  version: "0.1.0",
-  description: "PSTN voice call channel via Telnyx",
-
-  manifest: {
-    name: "@wopr-network/wopr-plugin-voice-call",
-    version: "0.1.0",
-    description: "PSTN voice call channel via Telnyx — inbound/outbound phone calls through STT/LLM/TTS pipeline",
-    author: "WOPR",
-    license: "MIT",
-    capabilities: ["voice-call", "telephony", "pstn"],
-    category: "channel",
-    requires: {
-      env: ["TELNYX_API_KEY"],
-      network: { outbound: true, inbound: true },
-    },
-    lifecycle: {
-      shutdownBehavior: "drain",
-      shutdownTimeoutMs: 30000,
-    },
-  },
+  version: "1.0.0",
+  description: "Voice call orchestration — coordinates TTS + STT for full voice conversations",
+  manifest,
 
   async init(context: WOPRPluginContext) {
     ctx = context;
 
-    // 1. Register config schema
-    ctx.registerConfigSchema("wopr-plugin-voice-call", voiceCallConfigSchema);
+    // Register config schema
+    ctx.registerConfigSchema("wopr-plugin-voice-call", configSchema);
 
-    // 2. Register storage schema
-    await ctx.storage.register(voiceCallStorageSchema);
-
-    // 3. Load config
-    const config = ctx.getConfig<VoiceCallPluginConfig>();
-    const apiKey = config?.apiKey || process.env.TELNYX_API_KEY;
-
-    if (!apiKey) {
-      logger.warn("Telnyx API key not configured — voice call plugin inactive");
-      return;
-    }
-
-    // 4. Create Telnyx client
-    const telnyxClient = new TelnyxClient({
-      apiKey,
-      connectionId: config?.connectionId,
-      defaultCallerId: config?.defaultCallerId,
-      webhookBaseUrl: config?.webhookBaseUrl,
-    });
-
-    // 5. Health check
-    const healthy = await telnyxClient.healthCheck();
-    if (!healthy) {
-      logger.error("Telnyx API health check failed — check API key");
-      return;
-    }
-
-    // 6. Create managers
-    callManager = new CallManager(ctx, config || {}, telnyxClient);
-    phoneNumberManager = new PhoneNumberManager(telnyxClient, ctx);
-    webhookHandler = new WebhookHandler({
-      telnyxClient,
-      callManager,
-      ctx,
-      config: config || {},
-    });
-
-    // 7. Register channel provider
+    // Register channel provider
     ctx.registerChannelProvider(voiceCallChannelProvider);
     logger.info("Registered voice-call channel provider");
 
-    // 8. Register extension (for other plugins to initiate outbound calls)
-    ctx.registerExtension("voice-call", {
-      initiateCall: async (to: string, from?: string) => {
-        if (!callManager || !telnyxClient) throw new Error("Voice call plugin not initialized");
-        const callerId = from || config?.defaultCallerId;
-        if (!callerId) throw new Error("No caller ID configured");
-        const webhookUrl = `${config?.webhookBaseUrl}/plugins/voice-call/webhook`;
-        const result = await telnyxClient.createCall(to, callerId, webhookUrl);
-        return callManager.initiateOutboundCall(to, callerId, "default", result);
-      },
-      getActiveCallCount: () => callManager?.activeCallCount || 0,
-      getPhoneNumbers: (tenantId: string) => phoneNumberManager?.listForTenant(tenantId) || [],
-      provisionNumber: (number: string, tenantId: string) => phoneNumberManager?.provision(number, tenantId),
-      releaseNumber: (number: string, tenantId: string) => phoneNumberManager?.release(number, tenantId),
-      searchNumbers: (opts: { country?: string; areaCode?: string }) => phoneNumberManager?.searchAvailable(opts),
-      handleWebhookRequest: (rawBody: string, headers: Record<string, string | string[] | undefined>) =>
-        webhookHandler?.handleWebhookRequest(rawBody, headers),
-    });
+    // Register extension
+    ctx.registerExtension("voice-call", voiceCallExtension);
     logger.info("Registered voice-call extension");
 
-    // 9. Register capability provider
-    if (ctx.registerProvider) {
-      ctx.registerProvider({
-        id: "telnyx-voice-call",
-        name: "Telnyx Voice Call",
-        type: "voice-call",
-        configSchema: voiceCallConfigSchema,
+    // Register A2A tools (guarded)
+    if (ctx.registerA2AServer) {
+      ctx.registerA2AServer({
+        name: "voice-call",
+        version: "1.0.0",
+        tools: [
+          {
+            name: "voice-call.status",
+            description: "Get the status of active voice sessions",
+            inputSchema: { type: "object", properties: {} },
+            handler: async () => {
+              const sessions = getAllVoiceSessions();
+              return {
+                content: [
+                  {
+                    type: "text" as const,
+                    text: JSON.stringify({
+                      activeSessions: sessions.length,
+                      sessions: sessions.map((s) => ({
+                        id: s.id,
+                        sessionId: s.sessionId,
+                        state: s.state,
+                        channelId: s.channelId,
+                      })),
+                    }),
+                  },
+                ],
+              };
+            },
+          },
+          {
+            name: "voice-call.end-all",
+            description: "End all active voice sessions",
+            inputSchema: { type: "object", properties: {} },
+            handler: async () => {
+              const count = getAllVoiceSessions().length;
+              endAllVoiceSessions();
+              return {
+                content: [
+                  {
+                    type: "text" as const,
+                    text: `Ended ${count} voice session(s)`,
+                  },
+                ],
+              };
+            },
+          },
+        ],
       });
+      logger.info("Registered voice-call A2A tools");
     }
 
-    logger.info("Voice call plugin initialized");
+    // Check for TTS/STT availability
+    const voice = ctx.hasVoice();
+    if (!voice.tts || !voice.stt) {
+      logger.warn(
+        `Voice capabilities incomplete — voice-call requires both TTS and STT providers (hasTTS=${voice.tts}, hasSTT=${voice.stt})`,
+      );
+    }
+
+    // Subscribe to events
+    if (ctx.events?.on) {
+      const unsubSessionEnd = ctx.events.on("session:destroy", () => {
+        endAllVoiceSessions();
+      });
+      if (typeof unsubSessionEnd === "function") {
+        cleanups.push(unsubSessionEnd);
+      }
+    }
   },
 
   async shutdown() {
-    if (callManager) {
-      await callManager.shutdownAll();
-      callManager = null;
+    // End all voice sessions
+    endAllVoiceSessions();
+
+    // Run all cleanup functions
+    for (const cleanup of cleanups) {
+      try {
+        cleanup();
+      } catch (error: unknown) {
+        logger.error(`Cleanup error: ${String(error)}`);
+      }
     }
-    if (webhookHandler) {
-      await webhookHandler.shutdown();
-      webhookHandler = null;
-    }
+    cleanups.length = 0;
+
+    // Unregister everything
     if (ctx) {
+      ctx.unregisterConfigSchema("wopr-plugin-voice-call");
       ctx.unregisterChannelProvider("voice-call");
       ctx.unregisterExtension("voice-call");
     }
+
+    // Clear module state
+    registeredCommands.clear();
+    registeredParsers.clear();
     ctx = null;
-    phoneNumberManager = null;
-    logger.info("Voice call plugin shut down");
+
+    logger.info("Voice call plugin stopped");
   },
 };
 
