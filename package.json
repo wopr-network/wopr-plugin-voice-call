@@ -7,7 +7,7 @@
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
-  "keywords": ["wopr", "plugin", "voice", "tts", "stt", "voice-call"],
+  "keywords": ["wopr", "wopr-plugin", "plugin", "voice", "tts", "stt", "voice-call"],
   "scripts": {
     "build": "tsc",
     "check": "biome check --config-path=. src/ && tsc --noEmit",
