@@ -16,6 +16,7 @@
     "lint": "biome check --config-path=. src/",
     "lint:fix": "biome check --config-path=. --fix src/",
     "test": "vitest run",
+    "typecheck": "tsc --noEmit",
     "prepublishOnly": "npm run build"
   },
   "dependencies": {
